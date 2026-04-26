@@ -1,0 +1,5 @@
+.env
+node_modules/
+dist/
+/server/database.db*
+/client/.tanstack
