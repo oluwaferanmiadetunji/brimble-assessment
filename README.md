@@ -1,103 +1,217 @@
-## Brimble assessment — one-page deployment pipeline
+# Brimble assessment — one-page deployment pipeline
 
-- **Frontend**: one-page UI to create deployments, view status, and stream logs live.
-- **Backend**: API + SQLite state + deployment runner.
-- **Pipeline**: build with **Railpack** → run with **Docker** → route via **Caddy** (single ingress).
+- **Frontend**: one-page UI to create deployments, view status, and stream logs live  
+- **Backend**: API + SQLite state + deployment runner  
+- **Pipeline**: **Railpack → Docker → Caddy** (single ingress)
 
-Everything boots with a single `docker compose up`.
+Runs end-to-end with:
+```bash
+docker compose up --build
+```
+
+---
+
+## Design goals
+
+- **End-to-end simplicity** — single command boot
+- **Explicit pipeline** — `pending → building → deploying → running → failed`
+- **Real-time feedback** — logs stream live (SSE)
+- **Minimal surface** — no external infra
+- **Single ingress** — all traffic via Caddy
+
+> Not production-ready.
+
+---
 
 ## Tech stack
 
-- **Frontend**: React + TypeScript, Vite, Tailwind, TanStack Router + TanStack Query, SSE (EventSource), `react-hot-toast`
-- **Backend**: Node.js + TypeScript, Express, SQLite (`better-sqlite3`)
-- **Build**: Railpack (invoked via a Docker wrapper)
-- **Runtime**: Docker (deployments run as containers on the host Docker engine)
-- **Ingress**: Caddy (reverse-proxy for UI, API, and deployed apps)
-- **Build engine**: BuildKit (`moby/buildkit`)
+- **Frontend**: React + TS, Vite, Tailwind, TanStack Router + Query, SSE
+- **Backend**: Node.js + TS, Express, SQLite (`better-sqlite3`)
+- **Build**: Railpack (Docker wrapper, BuildKit)
+- **Runtime**: Docker (host engine)
+- **Ingress**: Caddy
+
+---
+
+## System diagram
+
+```
+User
+  ↓
+Frontend (Vite)
+  ↓
+Backend API (Express)
+  ↓
+Pipeline Runner
+  ├─ Railpack (build → image)
+  ├─ Docker (run container)
+  └─ Caddy (route traffic)
+  ↓
+Running App
+```
+
+---
+
+## Request / data flow
+
+```
+POST /deployments
+  ↓
+create row (status=pending)
+  ↓
+spawn background job
+  ↓
+[build] → [run] → [route]
+  ↓
+write logs → DB
+  ↓
+SSE stream → UI
+```
+
+---
+
+## Sequence diagram (pipeline execution)
+
+```
+User        Frontend        Backend        Runner        Railpack        Docker        Caddy
+ |              |              |              |              |              |              |
+ |  click deploy|              |              |              |              |              |
+ |------------->| POST /deployments          |              |              |              |
+ |              |------------->| create row (pending)       |              |              |
+ |              |<-------------| 200 OK                    |              |              |
+ |              |              | spawn job --------------->|              |              |
+ |              |              |              | build ---->|              |              |
+ |              |              |              |<-- logs ----              |              |
+ |              |              |              | run --------------------->| start ctr    |
+ |              |              |              |<-- logs ------------------              |
+ |              |              |              | route --------------------------------->| config
+ |              |              |              |<-- logs --------------------------------|
+ |              |              |<-- stream logs (SSE) ----------------------------------|
+ |              |<-------------|                                               updates  |
+```
+
+---
 
 ## Architecture overview
 
-### High-level flow
+Pipeline model:
+```
+source → build → image → container → routed app
+```
 
-1. User submits either:
-   - a **Git URL** (`https://…` or `git@github.com:…`) or
-   - an **uploaded archive** (`.zip`, `.tar.gz`, `.tgz`)
-2. Backend creates a `deployments` row (SQLite) and appends logs to `deployment_logs`.
-3. Backend runs the pipeline:
-   - **Build** image using Railpack
-   - **Run** container locally via Docker (`docker run … -p hostPort:containerPort`)
-   - **Route** traffic via Caddy at `/apps/<deploymentId>/`
-4. Frontend:
-   - lists deployments (`GET /api/deployments`)
-   - shows a deployment + recent logs (`GET /api/deployments/:id`)
-   - streams logs live via SSE (`GET /api/deployments/:id/logs/stream`)
+Lifecycle:
+```
+pending → building → deploying → running → failed
+```
 
-### Ingress routing (Caddy)
+### Why this shape
 
-From [`caddy/Caddyfile`](caddy/Caddyfile):
+- **Single deployment = single pipeline**
+- **Logs-first design** (persist + stream)
+- **Caddy as single ingress**
+- **Backend controls routing** (no dynamic Caddy reloads)
 
-- `/api/*` → backend (Caddy strips `/api`)
-- `/apps/*` → backend app-proxy (backend forwards to the correct deployed container)
-- `/` → frontend (Vite preview server)
+---
 
-### Deployed apps path proxy
+## Pipeline execution model
 
-Deployed containers are exposed on host ports starting at `DEPLOY_HOST_PORT_BASE` (default `40000`).
+- API returns immediately
+- background runner executes steps
+- stdout/stderr → `deployment_logs`
+- logs:
+  - persisted (history)
+  - streamed (SSE)
 
-The backend handles `/apps/<id>/*` by:
+---
 
-- computing the host port for `<id>`
-- stripping the `/apps/<id>` prefix
-- proxying to `http://host.docker.internal:<computedPort>/...`
+## Build (Railpack)
 
-This keeps **Caddy as the single ingress** and supports path-based routing.
+Railpack replaces Dockerfiles:
 
-## Running the stack
+- detects runtime
+- installs deps
+- builds app
+- outputs container image
 
-### Prereqs
+**Trade-off**
+- less control vs Dockerfile
+- much faster onboarding
 
-- Docker Desktop (or Docker Engine + Compose plugin)
+---
 
-### Start
+## Log streaming (SSE)
 
-At repo root:
+**Why SSE**
+- server → client only (perfect for logs)
+- simpler than WebSockets
+- auto-reconnect
+
+**Trade-offs**
+- no bidirectional comms
+- less flexible
+
+---
+
+## Routing (Caddy)
+
+```
+/api/*   → backend
+/apps/*  → backend proxy → container
+/        → frontend
+```
+
+---
+
+## App routing model
+
+```
+/apps/<id> → backend → container:port
+```
+
+Backend:
+- maps id → port
+- strips prefix
+- proxies request
+
+---
+
+## Running
 
 ```bash
 docker compose up --build
 ```
 
-### URLs
+URLs:
+- UI: http://localhost/
+- API: http://localhost/api/health
+- App: http://localhost/apps/<id>/
 
-- **UI**: `http://localhost/`
-- **API health**: `http://localhost/api/health`
-- **Example deployed app**: `http://localhost/apps/<deploymentId>/`
+---
 
-## Using the UI
+## Trade-offs
 
-### Git deployments
+- Static port → simple, limited  
+- Local runner → no scheduling  
+- Path routing → simpler than DNS  
+- Docker socket → unsafe in prod  
+- SQLite → single-node  
 
-Paste either of these (whitespace is trimmed):
+---
 
-- `https://github.com/kubevela/vela-hello-world`
-- `git@github.com:kubevela/vela-hello-world.git` (normalized to HTTPS for cloning in Docker)
+## What this demonstrates
 
-### Upload deployments
+- build systems (source → image)
+- container lifecycle
+- reverse proxy routing
+- real-time streaming (SSE)
+- pipeline orchestration
 
-- Upload a `.zip`, `.tar.gz`, or `.tgz` (max **200MB**)
-- The backend validates type/size and extracts safely (zip-slip protection)
-- GitHub “Download ZIP” archives are supported (single top-level folder is automatically unwrapped)
+---
 
-## Trade-offs / notes
+## Improvements
 
-- **No polling**: status updates are driven by SSE log events and targeted query invalidation.
-- **Port detection**: deployments assume an internal container port via `DEPLOY_CONTAINER_PORT` (default `3000`) and we pass `PORT` into the container env.
-- **Security**: archive extraction has basic hardening (path traversal protection; tar link entries rejected). This is not a production-grade sandbox.
-- **Scaling**: the runner is local-process based (no queue/orchestrator). In production this would be replaced by a job system + scheduler.
-
-## What I’d improve with more time
-
-- Stream explicit **status** SSE events (not only logs)
-- Better “app type” detection for uploads and clearer UX messaging
-- Optional router param routes instead of hash links
-- Container lifecycle improvements (zero-downtime redeploys, graceful shutdown)
-
+- job queue + workers
+- better port detection
+- graceful deploys
+- build cache reuse
+- stronger sandboxing
