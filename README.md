@@ -186,6 +186,9 @@ URLs:
 - API: http://localhost/api/health
 - App: http://localhost/apps/<id>/
 
+Test repo (Git URL):
+- https://github.com/kubevela/vela-hello-world.git
+
 ---
 
 ## Trade-offs
@@ -215,3 +218,22 @@ URLs:
 - graceful deploys
 - build cache reuse
 - stronger sandboxing
+
+## Brimble Deployment feedback
+I deployed a project using Brimble: https://oluwaferanmiadetunji.brimble.app/
+
+
+The core flow works, but there are a few UX rough edges. The first issue I hit was around deployment type selection. After choosing GitHub, it wasn’t obvious how to switch back to another option. I initially clicked “Back to projects” a couple of times before noticing the small “Change” text next to the GitHub label. The transition itself is clear, but the affordance to change it is too subtle for something that controls the entire flow.
+
+The deployment run/logs drawer also has a confusing interaction model. After triggering a deployment, a bottom drawer appears with logs, but clicking outside it does nothing.
+
+There are also a few smaller feedback gaps. For example, clicking the share button just changes it to a green check without any tooltip or message, so it’s unclear what action was completed (copied link, shared, etc.). Similarly, the “Visit Site” action isn’t very prominent and looks more like plain text than a primary action, which makes it easy to miss.
+
+One notable gap is the lack of rollback support. While environment variables and configuration are handled, there’s no obvious way to revert to a previous successful deployment, which is something I’d expect from a platform like this.
+
+What I’d improve
+
+- make deployment type switching more discoverable
+- add clear feedback for actions like sharing (tooltip or confirmation message)
+- make primary actions like “Visit Site” more visually prominent
+- add support for rolling back to previous deployments

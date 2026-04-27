@@ -8,6 +8,11 @@ import fs = require('fs')
 import path = require('path')
 import extract = require('../utils/extractArchive')
 
+const input = require('../utils/deploymentsInput') as {
+  normalizeGitUrl: (raw: string) => string
+  chooseUploadContextDir: (finalDir: string) => string
+}
+
 const router = express.Router()
 
 function isNonEmptyString(v: unknown): v is string {
@@ -16,13 +21,6 @@ function isNonEmptyString(v: unknown): v is string {
 
 function getWorkdirRoot() {
   return process.env.WORKDIR_ROOT ?? '/tmp/brimble'
-}
-
-function normalizeGitUrl(raw: string) {
-  const trimmed = raw.trim().replace(/\/+$/, '')
-  const m = trimmed.match(/^git@github\.com:([^/]+)\/(.+?)(?:\.git)?$/)
-  if (m) return `https://github.com/${m[1]}/${m[2]}.git`
-  return trimmed
 }
 
 function startPipeline(deploymentId: number) {
@@ -126,17 +124,8 @@ async function handleMultipartUpload(req: express.Request) {
 
   extract.assertNonEmptyDir(finalDir)
 
-  let contextDir = finalDir
-  const topEntries = fs.readdirSync(finalDir, { withFileTypes: true })
-  const nonDot = topEntries.filter((e) => !e.name.startsWith('.'))
-  const dirs = nonDot.filter((e) => e.isDirectory())
-  const files = nonDot.filter((e) => e.isFile())
-  if (dirs.length === 1 && files.length === 0) {
-    const onlyDir = dirs[0]
-    if (!onlyDir) throw new Error('unexpected empty directory listing')
-    contextDir = path.join(finalDir, onlyDir.name)
-    extract.assertNonEmptyDir(contextDir)
-  }
+  const contextDir = input.chooseUploadContextDir(finalDir)
+  extract.assertNonEmptyDir(contextDir)
 
   deploymentsRepo.setUploadPath(created.id, contextDir)
   return created
@@ -194,7 +183,7 @@ router.post('/', (req, res) => {
   const created = deploymentsRepo.createDeployment({
     source_type,
     source_url:
-      source_type === 'git' ? normalizeGitUrl(String(source_url)) : null,
+      source_type === 'git' ? input.normalizeGitUrl(String(source_url)) : null,
     upload_path: source_type === 'upload' ? String(upload_path) : null,
   })
 

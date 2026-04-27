@@ -4,7 +4,8 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
+    "test": "vitest run",
+    "test:watch": "vitest",
     "dev": "nodemon src/index.ts",
     "build": "tsc",
     "db:verify": "ts-node src/verify-schema.ts"
@@ -29,6 +30,7 @@
     "@types/unzipper": "^0.10.11",
     "nodemon": "^3.1.14",
     "ts-node": "^10.9.2",
-    "typescript": "^6.0.3"
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.5"
   }
 }
