@@ -9,9 +9,10 @@ async function railpackBuild(input: {
 
   const argsEnv = process.env.RAILPACK_ARGS
   const args = argsEnv
-    ? argsEnv.split(' ').filter(Boolean).map((s) =>
-        s === '{context}' ? input.contextPath : s === '{tag}' ? input.imageTag : s,
-      )
+    ? argsEnv
+        .split(' ')
+        .filter(Boolean)
+        .map((s) => s.replaceAll('{context}', input.contextPath).replaceAll('{tag}', input.imageTag))
     : ['build', input.contextPath, '--tag', input.imageTag]
 
   await exec.execStream(cmd, args, {

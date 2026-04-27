@@ -1,0 +1,17 @@
+:80 {
+  # API (Caddy strips /api prefix before proxying)
+  handle_path /api/* {
+    reverse_proxy server:3001
+  }
+
+  # Deployed apps (server handles /apps/* proxying)
+  handle /apps/* {
+    reverse_proxy server:3001
+  }
+
+  # Frontend (static preview server)
+  handle {
+    reverse_proxy client:4173
+  }
+}
+

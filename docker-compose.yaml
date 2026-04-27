@@ -1,0 +1,63 @@
+services:
+  buildkit:
+    image: moby/buildkit:latest
+    privileged: true
+    container_name: buildkit
+
+  railpack:
+    build:
+      context: ./railpack
+    image: brimble-assessment-railpack
+    platform: linux/amd64
+    entrypoint: ["sh","-lc"]
+    command: "sleep infinity"
+
+  server:
+    build:
+      context: ./server
+    environment:
+      PORT: "3001"
+      DB_PATH: /data/database.db
+      WORKDIR_ROOT: /workdir
+      PUBLIC_BASE_URL: http://localhost
+      DEPLOY_CONTAINER_PORT: "3000"
+      DEPLOY_HOST_PORT_BASE: "40000"
+      BUILDKIT_HOST: docker-container://buildkit
+      RAILPACK_CMD: docker
+      RAILPACK_ARGS: >-
+        run --rm
+        --platform linux/amd64
+        -e BUILDKIT_HOST=docker-container://buildkit
+        -v /var/run/docker.sock:/var/run/docker.sock
+        -v brimble-assessment_workdir:/workdir
+        brimble-assessment-railpack
+        build {context} --name {tag}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - workdir:/workdir
+      - server_db:/data
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      - buildkit
+      - railpack
+
+  client:
+    build:
+      context: ./client
+    expose:
+      - "4173"
+
+  caddy:
+    image: caddy:2
+    ports:
+      - "80:80"
+    volumes:
+      - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+    depends_on:
+      - client
+      - server
+
+volumes:
+  workdir:
+  server_db:

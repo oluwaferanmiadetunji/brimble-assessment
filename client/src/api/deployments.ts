@@ -56,6 +56,24 @@ export async function createDeployment(input: { source_type: 'git' | 'upload'; s
   return await fetchJson<Deployment>(`/deployments`, { method: 'POST', body: JSON.stringify(input) })
 }
 
+export async function createDeploymentFromUpload(file: File) {
+  const form = new FormData()
+  form.set('file', file)
+
+  const res = await fetch(`${API_BASE}/deployments`, { method: 'POST', body: form })
+  if (!res.ok) {
+    let msg = `Request failed (${res.status})`
+    try {
+      const body = (await res.json()) as { error?: string }
+      if (body?.error) msg = body.error
+    } catch {
+      // ignore
+    }
+    throw new Error(msg)
+  }
+  return (await res.json()) as Deployment
+}
+
 export function streamDeploymentLogs(id: number, onLog: (log: DeploymentLog) => void) {
   const es = new EventSource(`${API_BASE}/deployments/${id}/logs/stream`)
   const onMessage = (e: MessageEvent) => {

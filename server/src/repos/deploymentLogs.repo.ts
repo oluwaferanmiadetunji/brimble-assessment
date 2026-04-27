@@ -34,7 +34,10 @@ const listRecentByDeploymentStmt = db.prepare(`
   LIMIT @limit
 `)
 
-function appendLog(deploymentId: number, input: { stage: LogStage; level: LogLevel; message: string }) {
+function appendLog(
+  deploymentId: number,
+  input: { stage: LogStage; level: LogLevel; message: string },
+) {
   const info = insertStmt.run({
     deployment_id: deploymentId,
     stage: input.stage,
@@ -42,8 +45,10 @@ function appendLog(deploymentId: number, input: { stage: LogStage; level: LogLev
     message: input.message,
   })
   const id = Number(info.lastInsertRowid)
-  const row = db.prepare(`SELECT * FROM deployment_logs WHERE id = ?`).get(id) as LogRow
-  broker.broadcastLog(deploymentId, row as unknown as Record<string, unknown>)
+  const row = db
+    .prepare(`SELECT * FROM deployment_logs WHERE id = ?`)
+    .get(id) as LogRow
+  broker.broadcastLog(deploymentId, (row as unknown) as Record<string, unknown>)
   return row
 }
 
@@ -51,8 +56,14 @@ function listByDeployment(deploymentId: number) {
   return listByDeploymentStmt.all(deploymentId) as LogRow[]
 }
 
-function listRecentByDeployment(input: { deploymentId: number; limit: number }) {
-  const rows = listRecentByDeploymentStmt.all({ deployment_id: input.deploymentId, limit: input.limit }) as LogRow[]
+function listRecentByDeployment(input: {
+  deploymentId: number
+  limit: number
+}) {
+  const rows = listRecentByDeploymentStmt.all({
+    deployment_id: input.deploymentId,
+    limit: input.limit,
+  }) as LogRow[]
   rows.reverse()
   return rows
 }
@@ -62,4 +73,3 @@ export = {
   listByDeployment,
   listRecentByDeployment,
 }
-

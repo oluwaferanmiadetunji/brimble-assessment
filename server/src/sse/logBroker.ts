@@ -35,4 +35,3 @@ function broadcastLog(deploymentId: number, row: LogRow) {
 }
 
 export = { subscribe, unsubscribe, broadcastLog }
-

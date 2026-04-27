@@ -3,11 +3,143 @@ import deploymentsRepo = require('../repos/deployments.repo')
 import logsRepo = require('../repos/deploymentLogs.repo')
 import runner = require('../pipeline/runDeployment')
 import broker = require('../sse/logBroker')
+import Busboy = require('busboy')
+import fs = require('fs')
+import path = require('path')
+import extract = require('../utils/extractArchive')
 
 const router = express.Router()
 
 function isNonEmptyString(v: unknown): v is string {
   return typeof v === 'string' && v.trim().length > 0
+}
+
+function getWorkdirRoot() {
+  return process.env.WORKDIR_ROOT ?? '/tmp/brimble'
+}
+
+function normalizeGitUrl(raw: string) {
+  const trimmed = raw.trim().replace(/\/+$/, '')
+  const m = trimmed.match(/^git@github\.com:([^/]+)\/(.+?)(?:\.git)?$/)
+  if (m) return `https://github.com/${m[1]}/${m[2]}.git`
+  return trimmed
+}
+
+function startPipeline(deploymentId: number) {
+  logsRepo.appendLog(deploymentId, {
+    stage: 'queued',
+    level: 'info',
+    message: 'Queued. Waiting for available runners...',
+  })
+  setImmediate(() => {
+    runner.runDeployment(deploymentId).catch((err: unknown) => {
+      const msg = err instanceof Error ? err.message : String(err)
+      try {
+        deploymentsRepo.setFailed(deploymentId, { last_error: msg })
+        logsRepo.appendLog(deploymentId, {
+          stage: 'runtime',
+          level: 'error',
+          message: msg,
+        })
+      } catch {
+        // swallow
+      }
+    })
+  })
+}
+
+async function handleMultipartUpload(req: express.Request) {
+  const workdirRoot = getWorkdirRoot()
+  fs.mkdirSync(workdirRoot, { recursive: true })
+
+  const bb = Busboy({
+    headers: req.headers,
+    limits: { fileSize: 200 * 1024 * 1024, files: 1, fields: 10 },
+  })
+
+  let filePath: string | null = null
+  let fileName: string | null = null
+  let bytes = 0
+
+  const tmpDir = extract.makeTempDir(
+    path.join(workdirRoot, 'upload-tmp'),
+    'incoming',
+  )
+
+  await new Promise<void>((resolve, reject) => {
+    bb.on(
+      'file',
+      (
+        _name: string,
+        file: NodeJS.ReadableStream,
+        info: { filename: string },
+      ) => {
+        fileName = info.filename
+        const out = path.join(tmpDir, fileName)
+        filePath = out
+
+        const ws = fs.createWriteStream(out)
+        file.on('data', (chunk: Buffer) => {
+          bytes += chunk.length
+        })
+        ws.on('error', reject)
+        file.pipe(ws)
+      },
+    )
+
+    bb.on('error', reject)
+    bb.on('finish', () => resolve())
+    req.pipe(bb)
+  })
+
+  if (!filePath || !fileName) {
+    throw new Error('file is required')
+  }
+
+  const extType = extract.detectArchiveType(fileName)
+  if (!extType) {
+    throw new Error(
+      'unsupported archive type (expected .zip, .tar.gz, or .tgz)',
+    )
+  }
+
+  const magic = extract.sniffMagicBytes(filePath)
+  if (magic && magic !== extType) {
+    throw new Error('archive type does not match file contents')
+  }
+
+  if (bytes > 200 * 1024 * 1024) {
+    throw new Error('file too large (max 200MB)')
+  }
+
+  const created = deploymentsRepo.createDeployment({
+    source_type: 'upload',
+    source_url: null,
+    upload_path: tmpDir,
+  })
+
+  const finalDir = path.join(workdirRoot, 'upload', `dep-${created.id}`)
+  fs.mkdirSync(finalDir, { recursive: true })
+
+  if (extType === 'zip') await extract.extractZip(filePath, finalDir)
+  else await extract.extractTarGz(filePath, finalDir)
+
+  extract.assertNonEmptyDir(finalDir)
+
+  let contextDir = finalDir
+  const topEntries = fs.readdirSync(finalDir, { withFileTypes: true })
+  const nonDot = topEntries.filter((e) => !e.name.startsWith('.'))
+  const dirs = nonDot.filter((e) => e.isDirectory())
+  const files = nonDot.filter((e) => e.isFile())
+  if (dirs.length === 1 && files.length === 0) {
+    const onlyDir = dirs[0]
+    if (!onlyDir) throw new Error('unexpected empty directory listing')
+    contextDir = path.join(finalDir, onlyDir.name)
+    extract.assertNonEmptyDir(contextDir)
+  }
+
+  deploymentsRepo.setUploadPath(created.id, contextDir)
+  return created
 }
 
 function parseIntParam(v: unknown) {
@@ -21,6 +153,22 @@ function clamp(n: number, min: number, max: number) {
 }
 
 router.post('/', (req, res) => {
+  const contentType = String(req.headers['content-type'] ?? '')
+  if (contentType.includes('multipart/form-data')) {
+    handleMultipartUpload(req)
+      .then((created) => {
+        startPipeline(created.id)
+        return res.status(201).json(created)
+      })
+      .catch((err: unknown) => {
+        const msg = err instanceof Error ? err.message : String(err)
+        return res
+          .status(/too large/i.test(msg) ? 413 : 400)
+          .json({ error: msg })
+      })
+    return
+  }
+
   const body = (req.body ?? {}) as Record<string, unknown>
   const source_type = body.source_type
 
@@ -45,32 +193,12 @@ router.post('/', (req, res) => {
 
   const created = deploymentsRepo.createDeployment({
     source_type,
-    source_url: source_type === 'git' ? String(source_url) : null,
+    source_url:
+      source_type === 'git' ? normalizeGitUrl(String(source_url)) : null,
     upload_path: source_type === 'upload' ? String(upload_path) : null,
   })
 
-  logsRepo.appendLog(created.id, {
-    stage: 'queued',
-    level: 'info',
-    message: 'Queued. Waiting for available runners...',
-  })
-
-  // Fire-and-forget background pipeline.
-  setImmediate(() => {
-    runner.runDeployment(created.id).catch((err: unknown) => {
-      const msg = err instanceof Error ? err.message : String(err)
-      try {
-        deploymentsRepo.setFailed(created.id, { last_error: msg })
-        logsRepo.appendLog(created.id, {
-          stage: 'runtime',
-          level: 'error',
-          message: msg,
-        })
-      } catch {
-        // swallow
-      }
-    })
-  })
+  startPipeline(created.id)
 
   return res.status(201).json(created)
 })
@@ -145,9 +273,7 @@ router.get('/:id/logs/stream', (req, res) => {
   const heartbeat = setInterval(() => {
     try {
       res.write(`: ping\n\n`)
-    } catch {
-      
-    }
+    } catch {}
   }, 15_000)
 
   req.on('close', () => {

@@ -86,6 +86,12 @@ const setImageTagStmt = db.prepare(`
   WHERE id = @id
 `)
 
+const setUploadPathStmt = db.prepare(`
+  UPDATE deployments
+  SET upload_path = @upload_path
+  WHERE id = @id
+`)
+
 function createDeployment(input: { source_type: 'git' | 'upload'; source_url: string | null; upload_path: string | null }) {
   const status: DeploymentStatus = 'pending'
   const tx = db.transaction(() => {
@@ -129,6 +135,10 @@ function setImageTag(id: number, image_tag: string) {
   setImageTagStmt.run({ id, image_tag })
 }
 
+function setUploadPath(id: number, upload_path: string) {
+  setUploadPathStmt.run({ id, upload_path })
+}
+
 function setRunningInfo(
   id: number,
   input: { public_url: string; internal_port: string; started_at?: string; finished_at?: string },
@@ -153,6 +163,7 @@ export = {
   countAll,
   updateStatus,
   setImageTag,
+  setUploadPath,
   setRunningInfo,
   setFailed,
 }
